@@ -1,0 +1,1785 @@
+// prisma/schema.prisma
+// OpenClaw Console — 完整資料庫結構
+// 執行: npx prisma db push && npx prisma generate
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// ENUM
+// ─────────────────────────────────────────────────────────────
+
+enum PlanType {
+  STARTER
+  PRO
+  BUSINESS
+}
+
+enum WorkspaceStatus {
+  ACTIVE
+  SETTING
+  PAUSED
+  ERROR
+}
+
+enum AgentStatus {
+  ENABLED
+  DISABLED
+  STANDBY
+}
+
+enum ChannelType {
+  LINE
+  TELEGRAM
+  SLACK
+  DISCORD
+  TEAMS
+  GOOGLECHAT
+  WHATSAPP
+}
+
+enum ChannelStatus {
+  CONNECTED
+  TESTING
+  DISCONNECTED
+  ERROR
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum SkillStatus {
+  ENABLED
+  DISABLED
+  PENDING
+}
+
+enum SkillSource {
+  OFFICIAL
+  COMMUNITY
+  PRIVATE
+}
+
+enum SecretStatus {
+  OK
+  EXPIRING
+  EXPIRED
+}
+
+enum AuditResult {
+  PASS
+  WARN
+  FAIL
+}
+
+enum LogType {
+  CHAT
+  TOOL
+  ERROR
+  WARN
+  SYSTEM
+}
+
+enum IntegrationStatus {
+  CONNECTED
+  RECONNECT
+  PENDING
+  INACTIVE
+}
+
+enum UserRole {
+  ADMIN
+  OPERATOR
+  VIEWER
+}
+
+// ─────────────────────────────────────────────────────────────
+// USER & AUTH
+// ─────────────────────────────────────────────────────────────
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  name         String?
+  role         UserRole  @default(VIEWER)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relations
+  auditLogs    AuditLog[]
+  memberships  WorkspaceMember[]
+  reviewComments ReviewComment[]
+  notifications  Notification[]
+
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────────────────────
+// WORKSPACE  (多租戶核心)
+// ─────────────────────────────────────────────────────────────
+
+model Workspace {
+  id          String          @id @default(cuid())
+  name        String                              // e.g. "電商客服"
+  client      String                              // e.g. "客戶 A"
+  plan        PlanType        @default(STARTER)
+  status      WorkspaceStatus @default(SETTING)
+  gatewayUrl  String          @default("http://127.0.0.1:8888")
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  // Relations
+  agents       Agent[]
+  channels     ChannelBinding[]
+  secrets      Secret[]
+  tools        WorkspaceTool[]
+  skills       WorkspaceSkill[]
+  logs         LogEntry[]
+  usageRecords UsageRecord[]
+  backups      WorkspaceBackup[]
+  reviewQueue  ReviewQueue[]
+  gatewayConfig GatewayConfig?
+  members      WorkspaceMember[]
+  sessions     ConversationSession[]
+  modelConfigs ModelConfig[]
+  knowledgeBases KnowledgeBase[]
+  flows         ConversationFlow[]
+  segments      UserSegment[]
+  broadcasts    Broadcast[]
+  surveys       SatisfactionSurvey[]
+  forms         CollectForm[]
+  mediaJobs     MediaJob[]
+  handoffs      HandoffQueue[]
+  abTests       ABTest[]
+  chains        AgentChain[]
+  orchFlows     OrchestrationFlow[]
+  oauthTokens  OAuthToken[]
+  billingCustomer BillingCustomer?
+
+  @@map("workspaces")
+}
+
+// ─────────────────────────────────────────────────────────────
+// AGENT
+// ─────────────────────────────────────────────────────────────
+
+model Agent {
+  id           String      @id @default(cuid())
+  workspaceId  String
+  name         String                           // e.g. "客服 Aria"
+  initials     String                           // e.g. "AR"
+  role         String                           // e.g. "電商客服"
+  description  String      @default("")
+  systemPrompt String      @db.Text @default("")
+  replyStyle   String      @default("friendly")
+  status       AgentStatus @default(ENABLED)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  // Relations
+  workspace    Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channelBindings AgentChannelBinding[]
+  toolBindings AgentTool[]
+  promptTemplates PromptTemplate[]
+  promptVersions PromptVersion[]
+  modelConfig  ModelConfig?
+
+  @@map("agents")
+}
+
+model PromptTemplate {
+  id        String   @id @default(cuid())
+  agentId   String
+  name      String                          // e.g. "退換貨模板"
+  content   String   @db.Text
+  category  String   @default("general")   // faq / refund / escalation ...
+  createdAt DateTime @default(now())
+
+  agent     Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@map("prompt_templates")
+}
+
+// ─────────────────────────────────────────────────────────────
+// CHANNEL
+// ─────────────────────────────────────────────────────────────
+
+model Channel {
+  id          String        @id @default(cuid())
+  type        ChannelType
+  displayName String                            // e.g. "LINE Official Account"
+  handle      String                            // e.g. "@openclaw_demo"
+  status      ChannelStatus @default(DISCONNECTED)
+  enabled     Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  // Relations
+  bindings    ChannelBinding[]
+
+  @@map("channels")
+}
+
+// Workspace ↔ Channel (多對多) + policy
+model ChannelBinding {
+  id             String    @id @default(cuid())
+  workspaceId    String
+  channelId      String
+  defaultAgentId String?
+
+  // Policy
+  dmScope        String    @default("restricted") // restricted | open
+  groupEnabled   Boolean   @default(true)
+  allowlistMode  Boolean   @default(false)
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Relations
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channel        Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  allowlist      SenderAllowlist[]
+  agentBindings  AgentChannelBinding[]
+
+  @@unique([workspaceId, channelId])
+  @@map("channel_bindings")
+}
+
+model SenderAllowlist {
+  id               String         @id @default(cuid())
+  channelBindingId String
+  senderId         String                            // platform user id / handle
+  note             String?
+  createdAt        DateTime       @default(now())
+
+  binding          ChannelBinding @relation(fields: [channelBindingId], references: [id], onDelete: Cascade)
+
+  @@unique([channelBindingId, senderId])
+  @@map("sender_allowlists")
+}
+
+model AgentChannelBinding {
+  agentId          String
+  channelBindingId String
+
+  agent            Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  binding          ChannelBinding @relation(fields: [channelBindingId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, channelBindingId])
+  @@map("agent_channel_bindings")
+}
+
+// ─────────────────────────────────────────────────────────────
+// TOOL
+// ─────────────────────────────────────────────────────────────
+
+model Tool {
+  id              String    @id @default(cuid())
+  name            String    @unique              // e.g. "order-lookup"
+  description     String    @default("")
+  risk            RiskLevel @default(LOW)
+  requireApproval Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+
+  workspaceTools  WorkspaceTool[]
+  agentTools      AgentTool[]
+
+  @@map("tools")
+}
+
+// Workspace ↔ Tool (啟用狀態)
+model WorkspaceTool {
+  workspaceId String
+  toolId      String
+  enabled     Boolean  @default(true)
+  execCount   Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tool        Tool      @relation(fields: [toolId], references: [id], onDelete: Cascade)
+
+  @@id([workspaceId, toolId])
+  @@map("workspace_tools")
+}
+
+// Agent ↔ Tool
+model AgentTool {
+  agentId String
+  toolId  String
+
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  tool    Tool   @relation(fields: [toolId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, toolId])
+  @@map("agent_tools")
+}
+
+// ─────────────────────────────────────────────────────────────
+// SKILL
+// ─────────────────────────────────────────────────────────────
+
+model Skill {
+  id          String      @id @default(cuid())
+  name        String      @unique              // e.g. "line-oa-adapter"
+  version     String                           // e.g. "1.2.0"
+  description String      @default("")
+  risk        RiskLevel   @default(LOW)
+  source      SkillSource @default(OFFICIAL)
+  installedAt DateTime    @default(now())
+
+  workspaceSkills WorkspaceSkill[]
+
+  @@map("skills")
+}
+
+// Workspace ↔ Skill
+model WorkspaceSkill {
+  workspaceId String
+  skillId     String
+  status      SkillStatus @default(PENDING)
+  reviewedBy  String?
+  reviewedAt  DateTime?
+  updatedAt   DateTime    @updatedAt
+
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  skill       Skill       @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@id([workspaceId, skillId])
+  @@map("workspace_skills")
+}
+
+// ─────────────────────────────────────────────────────────────
+// SECRETS  (API Keys, tokens — 加密儲存)
+// ─────────────────────────────────────────────────────────────
+
+model Secret {
+  id             String       @id @default(cuid())
+  workspaceId    String
+  name           String                            // e.g. "ANTHROPIC_API_KEY"
+  encryptedValue String       @db.Text             // AES-256 加密後的值
+  status         SecretStatus @default(OK)
+  expiresAt      DateTime?
+  lastUpdatedAt  DateTime     @default(now())
+  createdAt      DateTime     @default(now())
+
+  workspace      Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, name])
+  @@map("secrets")
+}
+
+// ─────────────────────────────────────────────────────────────
+// SECURITY AUDIT
+// ─────────────────────────────────────────────────────────────
+
+model SecurityAudit {
+  id          String      @id @default(cuid())
+  workspaceId String?                              // null = global audit
+  checkId     String                               // e.g. "gateway-bind"
+  title       String
+  description String      @db.Text
+  result      AuditResult
+  actionLabel String?
+  resolvedAt  DateTime?
+  createdAt   DateTime    @default(now())
+
+  @@map("security_audits")
+}
+
+// ─────────────────────────────────────────────────────────────
+// LOGS
+// ─────────────────────────────────────────────────────────────
+
+model LogEntry {
+  id          String   @id @default(cuid())
+  workspaceId String
+  type        LogType
+  message     String   @db.Text
+  metadata    Json?                                // 額外的 structured data
+  createdAt   DateTime @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt(sort: Desc)])
+  @@index([type, createdAt(sort: Desc)])
+  @@map("log_entries")
+}
+
+// ─────────────────────────────────────────────────────────────
+// USAGE
+// ─────────────────────────────────────────────────────────────
+
+model UsageRecord {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  date         DateTime @db.Date               // 當日 00:00 UTC
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  apiCalls     Int      @default(0)
+  messages     Int      @default(0)
+  toolExecs    Int      @default(0)
+  costNTD      Decimal  @db.Decimal(10, 2) @default(0)
+
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, date])
+  @@index([workspaceId, date(sort: Desc)])
+  @@map("usage_records")
+}
+
+// ─────────────────────────────────────────────────────────────
+// INTEGRATIONS
+// ─────────────────────────────────────────────────────────────
+
+model Integration {
+  id          String            @id @default(cuid())
+  workspaceId String?                               // null = global
+  name        String                                // e.g. "Google Sheets"
+  type        String                                // sheets / notion / gmail / calendar / webhook
+  status      IntegrationStatus @default(INACTIVE)
+  configJson  Json?                                 // provider-specific config
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@map("integrations")
+}
+
+// ─────────────────────────────────────────────────────────────
+// WORKSPACE BACKUP
+// ─────────────────────────────────────────────────────────────
+
+model WorkspaceBackup {
+  id          String    @id @default(cuid())
+  workspaceId String
+  snapshotJson Json                              // 完整 workspace config snapshot
+  note        String?
+  createdAt   DateTime  @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("workspace_backups")
+}
+
+// ─────────────────────────────────────────────────────────────
+// AUDIT LOG  (使用者操作紀錄)
+// ─────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String
+  action      String                            // e.g. "workspace.create"
+  target      String?                           // e.g. workspace id
+  detail      Json?
+  ip          String?
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
+
+// ─────────────────────────────────────────────────────────────
+// REVIEW QUEUE
+// ─────────────────────────────────────────────────────────────
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EDITED
+  TIMEOUT
+}
+
+model ReviewQueue {
+  id            String       @id @default(cuid())
+  workspaceId   String
+  agentId       String
+  platform      String
+  userId        String
+  userMessage   String       @db.Text
+  aiDraft       String       @db.Text
+  editedReply   String?      @db.Text
+  replyToken    String?
+  status        ReviewStatus @default(PENDING)
+  reviewedBy    String?
+  reviewedAt    DateTime?
+  sentAt        DateTime?
+  comments     ReviewComment[]
+  note          String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  workspace     Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status, createdAt(sort: Desc)])
+  @@map("review_queue")
+}
+
+// ─────────────────────────────────────────────────────────────
+// ALERT RULES
+// ─────────────────────────────────────────────────────────────
+
+enum AlertChannel {
+  EMAIL
+  SLACK_WEBHOOK
+  LINE_NOTIFY
+}
+
+enum AlertTrigger {
+  ERROR_RATE_HIGH
+  BUDGET_THRESHOLD
+  SECURITY_FAIL
+  ALLOWLIST_VIOLATION
+  DAILY_REPORT
+  REVIEW_PENDING
+}
+
+model AlertRule {
+  id          String       @id @default(cuid())
+  workspaceId String?
+  name        String
+  trigger     AlertTrigger
+  channel     AlertChannel
+  destination String
+  threshold   Float?
+  enabled     Boolean      @default(true)
+  lastFiredAt DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  @@map("alert_rules")
+}
+
+model AlertLog {
+  id      String   @id @default(cuid())
+  ruleId  String
+  trigger String
+  message String   @db.Text
+  sentAt  DateTime @default(now())
+  @@map("alert_logs")
+}
+
+// ─────────────────────────────────────────────────────────────
+// GATEWAY CONFIG
+// ─────────────────────────────────────────────────────────────
+
+model GatewayConfig {
+  id            String    @id @default(cuid())
+  workspaceId   String    @unique
+  configJson    Json
+  rawJson5      String    @db.Text
+  lastPushedAt  DateTime?
+  lastValidAt   DateTime?
+  validationOk  Boolean   @default(false)
+  validationMsg String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  @@map("gateway_configs")
+}
+
+// ─────────────────────────────────────────────────────────────
+// TEMPLATES
+// ─────────────────────────────────────────────────────────────
+
+enum TemplateCategory {
+  CUSTOMER_SERVICE
+  SALES
+  ADMIN
+  FAQ
+  FORM_REPLY
+  SUMMARY
+  ESCALATION
+  CUSTOM
+}
+
+model Template {
+  id          String           @id @default(cuid())
+  workspaceId String?
+  name        String
+  description String           @default("")
+  category    TemplateCategory @default(CUSTOM)
+  content     String           @db.Text
+  variables   Json?
+  usageCount  Int              @default(0)
+  isSystem    Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  @@index([workspaceId, category])
+  @@map("templates")
+}
+
+// ─────────────────────────────────────────────────────────────
+// WHITE LABEL  (品牌客製化)
+// ─────────────────────────────────────────────────────────────
+
+model WhiteLabel {
+  id              String   @id @default(cuid())
+  workspaceId     String?  @unique           // null = 全域預設
+  brandName       String   @default("OpenClaw Console")
+  logoUrl         String?
+  faviconUrl      String?
+  primaryColor    String   @default("#BA7517")
+  accentColor     String   @default("#854F0B")
+  customDomain    String?  @unique
+  customCss       String?  @db.Text
+  supportEmail    String?
+  supportUrl      String?
+  footerText      String?
+  hideBuiltBy     Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  @@map("white_labels")
+}
+
+// ─────────────────────────────────────────────────────────────
+// RBAC  (角色權限)
+// ─────────────────────────────────────────────────────────────
+
+enum PermissionAction {
+  VIEW
+  CREATE
+  UPDATE
+  DELETE
+  APPROVE       // 審核相關
+  PUSH          // Gateway push
+  MANAGE        // 完整管理（含刪除）
+}
+
+enum PermissionResource {
+  WORKSPACE
+  AGENT
+  CHANNEL
+  TOOL
+  SKILL
+  SECRET
+  LOG
+  USAGE
+  SECURITY
+  REVIEW
+  GATEWAY
+  TEMPLATE
+  ALERT
+  WHITELABEL
+  API_KEY
+  USER
+}
+
+model RolePermission {
+  id         String             @id @default(cuid())
+  role       UserRole
+  resource   PermissionResource
+  action     PermissionAction
+  createdAt  DateTime           @default(now())
+
+  @@unique([role, resource, action])
+  @@map("role_permissions")
+}
+
+model WorkspaceMember {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        UserRole  @default(VIEWER)
+  invitedBy   String?
+  joinedAt    DateTime  @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@map("workspace_members")
+}
+
+// ─────────────────────────────────────────────────────────────
+// API KEYS  (對外開放 API)
+// ─────────────────────────────────────────────────────────────
+
+enum ApiKeyScope {
+  READ_ONLY
+  READ_WRITE
+  WEBHOOK_ONLY
+  FULL_ACCESS
+}
+
+model ApiKey {
+  id           String       @id @default(cuid())
+  workspaceId  String?                          // null = 全域 key
+  name         String
+  keyHash      String       @unique             // sha256(key), 只存 hash
+  keyPrefix    String                           // 顯示用，e.g. "oc_live_Abc1..."
+  scope        ApiKeyScope  @default(READ_ONLY)
+  allowedIps   String[]                         // IP 白名單，空 = 不限
+  expiresAt    DateTime?
+  lastUsedAt   DateTime?
+  usageCount   Int          @default(0)
+  enabled      Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@map("api_keys")
+}
+
+model WebhookEndpoint {
+  id           String    @id @default(cuid())
+  workspaceId  String?
+  name         String
+  url          String
+  secret       String                           // HMAC signing secret
+  events       String[]                         // e.g. ["log.error", "review.pending"]
+  enabled      Boolean   @default(true)
+  lastFiredAt  DateTime?
+  failCount    Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("webhook_endpoints")
+}
+
+model WebhookDelivery {
+  id              String    @id @default(cuid())
+  endpointId      String
+  event           String
+  payload         Json
+  responseStatus  Int?
+  responseBody    String?   @db.Text
+  ok              Boolean   @default(false)
+  attemptCount    Int       @default(1)
+  deliveredAt     DateTime  @default(now())
+
+  @@index([endpointId, deliveredAt(sort: Desc)])
+  @@map("webhook_deliveries")
+}
+
+// ─────────────────────────────────────────────────────────────
+// CONVERSATION SESSION  (對話記憶)
+// ─────────────────────────────────────────────────────────────
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+model ConversationSession {
+  id          String    @id @default(cuid())
+  workspaceId String
+  agentId     String
+  platform    String                          // LINE / TELEGRAM / SLACK
+  userId      String                          // platform user id
+  title       String?                         // auto-generated from first message
+  isActive    Boolean   @default(true)
+  messageCount Int      @default(0)
+  lastActiveAt DateTime @default(now())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  messages    ConversationMessage[]
+
+  @@unique([workspaceId, agentId, platform, userId])  // one active session per user+agent+platform
+  @@index([workspaceId, platform, userId])
+  @@index([workspaceId, lastActiveAt(sort: Desc)])
+  @@map("conversation_sessions")
+}
+
+model ConversationMessage {
+  id         String           @id @default(cuid())
+  sessionId  String
+  role       MessageRole
+  content    String           @db.Text
+  tokenCount Int?                             // estimated tokens for this message
+  metadata   Json?                            // tool calls, review status, etc.
+  createdAt  DateTime         @default(now())
+
+  session    ConversationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt(sort: Asc)])
+  @@map("conversation_messages")
+}
+
+// ─────────────────────────────────────────────────────────────
+// OAUTH TOKEN  (自動換票)
+// ─────────────────────────────────────────────────────────────
+
+enum OAuthProvider {
+  GOOGLE   // Gmail + Calendar
+  NOTION   // Notion (uses Bearer token, no refresh needed)
+  SLACK    // Slack OAuth
+}
+
+model OAuthToken {
+  id             String        @id @default(cuid())
+  workspaceId    String
+  provider       OAuthProvider
+  scope          String                          // e.g. "gmail.modify calendar.events"
+  encryptedAccessToken  String  @db.Text
+  encryptedRefreshToken String? @db.Text         // null for tokens without refresh
+  expiresAt      DateTime
+  tokenType      String        @default("Bearer")
+  userEmail      String?                         // associated Google account email
+  isValid        Boolean       @default(true)
+  lastRefreshedAt DateTime?
+  refreshFailCount Int         @default(0)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  workspace      Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, provider, scope])
+  @@index([expiresAt, isValid])
+  @@map("oauth_tokens")
+}
+
+// ─────────────────────────────────────────────────────────────
+// BILLING  (Stripe 訂閱)
+// ─────────────────────────────────────────────────────────────
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+  INCOMPLETE
+}
+
+enum InvoiceStatus {
+  DRAFT
+  OPEN
+  PAID
+  VOID
+  UNCOLLECTIBLE
+}
+
+model BillingCustomer {
+  id               String   @id @default(cuid())
+  workspaceId      String   @unique
+  stripeCustomerId String   @unique
+  email            String
+  name             String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  workspace        Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  subscriptions    Subscription[]
+  invoices         Invoice[]
+
+  @@map("billing_customers")
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  customerId           String
+  stripeSubscriptionId String             @unique
+  stripePriceId        String
+  plan                 PlanType
+  status               SubscriptionStatus @default(TRIALING)
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+  cancelAtPeriodEnd    Boolean            @default(false)
+  trialEnd             DateTime?
+  canceledAt           DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  customer             BillingCustomer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+model Invoice {
+  id              String        @id @default(cuid())
+  customerId      String
+  stripeInvoiceId String        @unique
+  amount          Int                          // 分（cents / 最小單位）
+  currency        String        @default("twd")
+  status          InvoiceStatus
+  periodStart     DateTime?
+  periodEnd       DateTime?
+  paidAt          DateTime?
+  invoiceUrl      String?
+  invoicePdf      String?
+  createdAt       DateTime      @default(now())
+
+  customer        BillingCustomer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@map("invoices")
+}
+
+model UsageOverage {
+  id          String   @id @default(cuid())
+  workspaceId String
+  month       String                           // "2026-03"
+  tokens      Int      @default(0)
+  messages    Int      @default(0)
+  costNTD     Decimal  @db.Decimal(10, 2) @default(0)
+  reported    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@unique([workspaceId, month])
+  @@map("usage_overages")
+}
+
+// ─────────────────────────────────────────────────────────────
+// PROMPT VERSION CONTROL
+// ─────────────────────────────────────────────────────────────
+
+model PromptVersion {
+  id           String   @id @default(cuid())
+  agentId      String
+  version      Int                              // auto-incremented per agent
+  systemPrompt String   @db.Text
+  replyStyle   String   @default("friendly")
+  changelog    String?                          // what changed in this version
+  isActive     Boolean  @default(false)         // only one version active at a time
+  createdBy    String?                          // userId
+  createdAt    DateTime @default(now())
+
+  agent        Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, version])
+  @@index([agentId, createdAt(sort: Desc)])
+  @@map("prompt_versions")
+}
+
+// ─────────────────────────────────────────────────────────────
+// SLA / HEALTH MONITORING
+// ─────────────────────────────────────────────────────────────
+
+enum HealthStatus {
+  HEALTHY
+  DEGRADED
+  DOWN
+  UNKNOWN
+}
+
+model ServiceHealthCheck {
+  id          String       @id @default(cuid())
+  workspaceId String?
+  service     String                            // "gateway", "line", "telegram", "claude-api"
+  status      HealthStatus @default(UNKNOWN)
+  latencyMs   Int?
+  errorMessage String?
+  checkedAt   DateTime     @default(now())
+
+  @@index([workspaceId, service, checkedAt(sort: Desc)])
+  @@map("service_health_checks")
+}
+
+model SLARecord {
+  id            String   @id @default(cuid())
+  workspaceId   String
+  date          DateTime @db.Date
+  uptimePct     Float    @default(100)          // 0-100
+  avgLatencyMs  Int      @default(0)
+  p95LatencyMs  Int      @default(0)
+  errorCount    Int      @default(0)
+  messageCount  Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  @@unique([workspaceId, date])
+  @@index([workspaceId, date(sort: Desc)])
+  @@map("sla_records")
+}
+
+// ─────────────────────────────────────────────────────────────
+// MODEL CONFIG  (多模型支援)
+// ─────────────────────────────────────────────────────────────
+
+enum ModelProvider {
+  ANTHROPIC
+  OPENAI       // future
+  GOOGLE       // future
+}
+
+model ModelConfig {
+  id             String        @id @default(cuid())
+  workspaceId    String
+  agentId        String?       @unique            // null = workspace default
+  provider       ModelProvider @default(ANTHROPIC)
+  modelId        String        @default("claude-sonnet-4-20250514")
+  maxTokens      Int           @default(1024)
+  temperature    Float         @default(0.7)
+  topP           Float?
+  systemPromptOverride String? @db.Text           // overrides agent system prompt if set
+  streamEnabled  Boolean       @default(false)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  workspace      Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agent          Agent?        @relation(fields: [agentId],     references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("model_configs")
+}
+
+// ─────────────────────────────────────────────────────────────
+// WEBHOOK DEAD LETTER QUEUE  (重試機制)
+// ─────────────────────────────────────────────────────────────
+
+enum DLQStatus {
+  PENDING     // waiting for retry
+  RETRYING
+  RESOLVED
+  DEAD        // max retries exhausted
+}
+
+model WebhookDLQ {
+  id           String    @id @default(cuid())
+  endpointId   String
+  event        String
+  payload      Json
+  lastError    String    @db.Text
+  attemptCount Int       @default(1)
+  maxAttempts  Int       @default(5)
+  nextRetryAt  DateTime
+  status       DLQStatus @default(PENDING)
+  resolvedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([status, nextRetryAt])
+  @@map("webhook_dlq")
+}
+
+// ─────────────────────────────────────────────────────────────
+// REVIEW COMMENTS  (審核協作留言)
+// ─────────────────────────────────────────────────────────────
+
+model ReviewComment {
+  id           String   @id @default(cuid())
+  reviewId     String
+  userId       String
+  content      String   @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  review       ReviewQueue @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  user         User        @relation(fields: [userId],   references: [id])
+
+  @@index([reviewId, createdAt])
+  @@map("review_comments")
+}
+
+// ─────────────────────────────────────────────────────────────
+// CUSTOM TOOL DEFINITIONS  (視覺化 Tool 建構器)
+// ─────────────────────────────────────────────────────────────
+
+enum ToolTrigger {
+  HTTP_GET
+  HTTP_POST
+  GOOGLE_SHEETS_READ
+  GOOGLE_SHEETS_WRITE
+  NOTION_CREATE
+  GMAIL_SEND
+  GCAL_CREATE
+  CUSTOM_FUNCTION
+}
+
+model CustomTool {
+  id           String      @id @default(cuid())
+  workspaceId  String
+  name         String                           // tool identifier, e.g. "check-inventory"
+  displayName  String
+  description  String      @db.Text
+  trigger      ToolTrigger @default(HTTP_GET)
+  configJson   Json                             // trigger-specific config
+  inputSchema  Json                             // JSON Schema for input params
+  outputFormat String      @default("text")    // "text" | "json" | "table"
+  enabled      Boolean     @default(true)
+  usageCount   Int         @default(0)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  workspace    Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, name])
+  @@map("custom_tools")
+}
+
+// ─────────────────────────────────────────────────────────────
+// KNOWLEDGE BASE  (RAG)
+// ─────────────────────────────────────────────────────────────
+
+enum KBDocStatus {
+  PENDING      // uploaded, not yet chunked
+  PROCESSING   // chunking in progress
+  READY        // embedded and searchable
+  FAILED
+}
+
+enum KBDocType {
+  TEXT
+  MARKDOWN
+  FAQ
+  URL
+  FILE
+}
+
+model KnowledgeBase {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  name         String
+  description  String?
+  agentIds     String[]                       // which agents can use this KB
+  docCount     Int      @default(0)
+  chunkCount   Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  documents    KBDocument[]
+
+  @@index([workspaceId])
+  @@map("knowledge_bases")
+}
+
+model KBDocument {
+  id            String      @id @default(cuid())
+  kbId          String
+  title         String
+  type          KBDocType   @default(TEXT)
+  sourceUrl     String?
+  rawContent    String      @db.Text
+  wordCount     Int         @default(0)
+  status        KBDocStatus @default(PENDING)
+  errorMessage  String?
+  processedAt   DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  kb            KnowledgeBase @relation(fields: [kbId], references: [id], onDelete: Cascade)
+  chunks        KBChunk[]
+
+  @@index([kbId, status])
+  @@map("kb_documents")
+}
+
+model KBChunk {
+  id          String   @id @default(cuid())
+  docId       String
+  chunkIndex  Int
+  content     String   @db.Text
+  // Store embedding as JSON array (fallback when pgvector not available)
+  embeddingJson Json?
+  tokenCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  document    KBDocument @relation(fields: [docId], references: [id], onDelete: Cascade)
+
+  @@index([docId, chunkIndex])
+  @@map("kb_chunks")
+}
+
+// ─────────────────────────────────────────────────────────────
+// A/B TESTING
+// ─────────────────────────────────────────────────────────────
+
+enum ABTestStatus {
+  DRAFT
+  RUNNING
+  PAUSED
+  COMPLETED
+}
+
+model ABTest {
+  id           String       @id @default(cuid())
+  workspaceId  String
+  name         String
+  agentId      String
+  status       ABTestStatus @default(DRAFT)
+  trafficSplit Int          @default(50)    // % going to variant B (0-100)
+  startedAt    DateTime?
+  endedAt      DateTime?
+  winner       String?                      // "A" | "B" | null
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  variants     ABVariant[]
+  results      ABResult[]
+
+  @@index([workspaceId, status])
+  @@map("ab_tests")
+}
+
+model ABVariant {
+  id           String   @id @default(cuid())
+  testId       String
+  label        String                        // "A" | "B"
+  systemPrompt String   @db.Text
+  modelId      String?
+  temperature  Float?
+  description  String?
+  createdAt    DateTime @default(now())
+
+  test         ABTest   @relation(fields: [testId], references: [id], onDelete: Cascade)
+  results      ABResult[]
+
+  @@unique([testId, label])
+  @@map("ab_variants")
+}
+
+model ABResult {
+  id           String   @id @default(cuid())
+  testId       String
+  variantId    String
+  sessionId    String?
+  userId       String
+  rating       Int?                          // 1-5 thumbs / star rating
+  resolved     Boolean  @default(false)      // did conversation reach resolution?
+  handedOff    Boolean  @default(false)      // did it escalate to human?
+  turnCount    Int      @default(0)
+  responseTime Int?                          // ms
+  createdAt    DateTime @default(now())
+
+  test         ABTest   @relation(fields: [testId], references: [id], onDelete: Cascade)
+  variant      ABVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@index([testId, variantId, createdAt])
+  @@map("ab_results")
+}
+
+// ─────────────────────────────────────────────────────────────
+// CONVERSATION FLOWS  (視覺化對話流程)
+// ─────────────────────────────────────────────────────────────
+
+enum FlowNodeType {
+  START
+  MESSAGE       // send fixed message
+  CONDITION     // if/else branch
+  API_CALL      // call external API or custom tool
+  SET_VARIABLE  // store value in session context
+  AGENT_INVOKE  // call AI agent
+  HANDOFF       // hand off to human or another agent
+  END
+}
+
+enum FlowStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+model ConversationFlow {
+  id           String     @id @default(cuid())
+  workspaceId  String
+  name         String
+  description  String?
+  trigger      String     @default("manual")    // keyword | schedule | event
+  triggerValue String?                           // e.g. keyword to match
+  status       FlowStatus @default(DRAFT)
+  nodesJson    Json                              // array of FlowNode objects
+  edgesJson    Json                              // array of edges {from, to, label}
+  stats        Json       @default("{\"runs\":0,\"completions\":0}")
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  runs         FlowRun[]
+
+  @@index([workspaceId, status])
+  @@map("conversation_flows")
+}
+
+model FlowRun {
+  id           String   @id @default(cuid())
+  flowId       String
+  workspaceId  String
+  userId       String
+  platform     String
+  state        Json     @default("{}")          // current variables
+  currentNodeId String?
+  completed    Boolean  @default(false)
+  startedAt    DateTime @default(now())
+  completedAt  DateTime?
+
+  flow         ConversationFlow @relation(fields: [flowId], references: [id], onDelete: Cascade)
+
+  @@index([flowId, startedAt(sort: Desc)])
+  @@index([workspaceId, userId])
+  @@map("flow_runs")
+}
+
+// ─────────────────────────────────────────────────────────────
+// USER SEGMENTS  (用戶分群)
+// ─────────────────────────────────────────────────────────────
+
+model UserSegment {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  name         String
+  description  String?
+  color        String   @default("#BA7517")
+  rules        Json                             // array of SegmentRule
+  memberCount  Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tags         UserTag[]
+  broadcasts   Broadcast[]
+
+  @@index([workspaceId])
+  @@map("user_segments")
+}
+
+model UserTag {
+  id          String      @id @default(cuid())
+  workspaceId String
+  segmentId   String?
+  userId      String                            // platform user id
+  platform    String
+  tags        String[]                          // e.g. ["vip", "churned"]
+  metadata    Json        @default("{}")
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  segment     UserSegment? @relation(fields: [segmentId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, platform, userId])
+  @@index([workspaceId, platform])
+  @@map("user_tags")
+}
+
+// ─────────────────────────────────────────────────────────────
+// BROADCAST / 定時推播
+// ─────────────────────────────────────────────────────────────
+
+enum BroadcastStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  COMPLETED
+  FAILED
+  CANCELED
+}
+
+model Broadcast {
+  id              String          @id @default(cuid())
+  workspaceId     String
+  name            String
+  message         String          @db.Text
+  platform        String                       // LINE | TELEGRAM | ALL
+  segmentId       String?
+  targetUserIds   String[]        @default([]) // specific user ids (overrides segment)
+  scheduledAt     DateTime?
+  status          BroadcastStatus @default(DRAFT)
+  sentCount       Int             @default(0)
+  failCount       Int             @default(0)
+  totalTarget     Int             @default(0)
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  workspace       Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  segment         UserSegment?    @relation(fields: [segmentId], references: [id], onDelete: SetNull)
+  logs            BroadcastLog[]
+
+  @@index([workspaceId, status])
+  @@index([scheduledAt, status])
+  @@map("broadcasts")
+}
+
+model BroadcastLog {
+  id          String   @id @default(cuid())
+  broadcastId String
+  userId      String
+  platform    String
+  success     Boolean
+  error       String?
+  sentAt      DateTime @default(now())
+
+  broadcast   Broadcast @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+
+  @@index([broadcastId, success])
+  @@map("broadcast_logs")
+}
+
+// ─────────────────────────────────────────────────────────────
+// HANDOFF PROTOCOL  (Agent 交接)
+// ─────────────────────────────────────────────────────────────
+
+enum HandoffStatus {
+  PENDING
+  ACCEPTED
+  RESOLVED
+  RETURNED   // returned back to AI
+}
+
+enum HandoffReason {
+  USER_REQUEST
+  HIGH_RISK
+  COMPLEXITY
+  ESCALATION
+  REVIEW_TIMEOUT
+  AGENT_LIMIT
+}
+
+model HandoffQueue {
+  id            String        @id @default(cuid())
+  workspaceId   String
+  fromAgentId   String?
+  toAgentId     String?        // if handing off to another AI agent
+  assignedTo    String?        // human operator userId
+  platform      String
+  userId        String
+  sessionId     String?
+  reason        HandoffReason
+  summary       String        @db.Text    // AI-generated context summary
+  transcript    Json          @default("[]")
+  status        HandoffStatus @default(PENDING)
+  priority      Int           @default(5) // 1-10, higher = more urgent
+  acceptedAt    DateTime?
+  resolvedAt    DateTime?
+  returnedAt    DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status, priority(sort: Desc)])
+  @@index([workspaceId, assignedTo])
+  @@map("handoff_queue")
+}
+
+// ─────────────────────────────────────────────────────────────
+// MULTI-AGENT ORCHESTRATION
+// ─────────────────────────────────────────────────────────────
+
+enum OrchStepType {
+  AGENT_CALL       // call another agent
+  CONDITION        // if/else branch
+  TRANSFORM        // regex / JSON path transform
+  TOOL_CALL        // call a tool directly
+  HUMAN_HANDOFF    // escalate to human
+  END
+}
+
+enum OrchRunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+  WAITING_HUMAN
+}
+
+model OrchestrationFlow {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  description String?
+  triggerAgentId String
+  stepsJson   Json                             // array of OrchStep
+  enabled     Boolean  @default(true)
+  runCount    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  runs        OrchRun[]
+
+  @@index([workspaceId])
+  @@map("orchestration_flows")
+}
+
+model OrchRun {
+  id          String        @id @default(cuid())
+  flowId      String
+  sessionId   String?
+  userId      String
+  status      OrchRunStatus @default(RUNNING)
+  inputText   String        @db.Text
+  outputText  String?       @db.Text
+  stepsLog    Json          @default("[]")    // executed steps with I/O
+  startedAt   DateTime      @default(now())
+  endedAt     DateTime?
+
+  flow        OrchestrationFlow @relation(fields: [flowId], references: [id], onDelete: Cascade)
+
+  @@index([flowId, startedAt(sort: Desc)])
+  @@map("orch_runs")
+}
+
+// ─────────────────────────────────────────────────────────────
+// NOTIFICATIONS
+// ─────────────────────────────────────────────────────────────
+
+enum NotifType {
+  ALERT          // system alert
+  REVIEW_PENDING // needs human review
+  BUDGET_WARNING // cost threshold
+  SECURITY       // security issue
+  SYSTEM         // general info
+  AB_TEST        // test result
+  KB_READY       // document processed
+}
+
+model Notification {
+  id          String    @id @default(cuid())
+  userId      String
+  workspaceId String?
+  type        NotifType @default(SYSTEM)
+  title       String
+  body        String
+  url         String?                          // deep link to relevant page
+  read        Boolean   @default(false)
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read, createdAt(sort: Desc)])
+  @@map("notifications")
+}
+
+// ─────────────────────────────────────────────────────────────
+// WORKSPACE TEMPLATE MARKETPLACE
+// ─────────────────────────────────────────────────────────────
+
+enum MarketplaceCategory {
+  ECOMMERCE
+  REAL_ESTATE
+  HEALTHCARE
+  FINANCE
+  EDUCATION
+  HOSPITALITY
+  GENERAL
+}
+
+model MarketplaceTemplate {
+  id           String              @id @default(cuid())
+  publishedBy  String              // userId
+  name         String
+  description  String              @db.Text
+  category     MarketplaceCategory @default(GENERAL)
+  previewJson  Json                // sanitized workspace snapshot (no secrets)
+  tags         String[]
+  installCount Int                 @default(0)
+  rating       Float               @default(0)
+  ratingCount  Int                 @default(0)
+  isOfficial   Boolean             @default(false)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@index([category, installCount(sort: Desc)])
+  @@map("marketplace_templates")
+}
+
+// ─────────────────────────────────────────────────────────────
+// SMART ANOMALY DETECTION
+// ─────────────────────────────────────────────────────────────
+
+enum AnomalyType {
+  COST_SPIKE       // sudden cost increase
+  MESSAGE_SPIKE    // unusual volume
+  ERROR_RATE_SPIKE // too many errors
+  LATENCY_SPIKE    // slow responses
+  ZERO_TRAFFIC     // no messages (service down?)
+}
+
+model AnomalyEvent {
+  id           String      @id @default(cuid())
+  workspaceId  String
+  type         AnomalyType
+  metric       String                           // "costNTD", "messages", "errorRate"
+  value        Float                            // observed value
+  baseline     Float                            // expected value (7-day avg)
+  deviation    Float                            // % deviation from baseline
+  acknowledged Boolean     @default(false)
+  createdAt    DateTime    @default(now())
+
+  @@index([workspaceId, acknowledged, createdAt(sort: Desc)])
+  @@map("anomaly_events")
+}
+
+// ─────────────────────────────────────────────────────────────
+// SATISFACTION SURVEY  (客服滿意度)
+// ─────────────────────────────────────────────────────────────
+
+enum SurveyStatus {
+  PENDING    // sent, not yet answered
+  COMPLETED
+  EXPIRED
+  SKIPPED
+}
+
+model SatisfactionSurvey {
+  id           String       @id @default(cuid())
+  workspaceId  String
+  agentId      String?
+  sessionId    String?
+  platform     String
+  userId       String
+  rating       Int?                             // 1-5
+  comment      String?      @db.Text
+  tags         String[]     @default([])        // "fast" | "accurate" | "friendly" etc.
+  status       SurveyStatus @default(PENDING)
+  sentAt       DateTime     @default(now())
+  answeredAt   DateTime?
+  expiresAt    DateTime?
+
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, sentAt(sort: Desc)])
+  @@index([workspaceId, rating])
+  @@map("satisfaction_surveys")
+}
+
+// ─────────────────────────────────────────────────────────────
+// FORM COLLECTOR  (表單收集)
+// ─────────────────────────────────────────────────────────────
+
+enum FormFieldType {
+  TEXT
+  NUMBER
+  EMAIL
+  PHONE
+  DATE
+  SELECT
+  MULTI_SELECT
+  BOOLEAN
+  FILE_URL
+}
+
+enum FormStatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+}
+
+model CollectForm {
+  id           String     @id @default(cuid())
+  workspaceId  String
+  name         String
+  description  String?
+  fields       Json                             // array of FormField definitions
+  successMsg   String?
+  status       FormStatus @default(DRAFT)
+  responseCount Int       @default(0)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  responses    FormResponse[]
+
+  @@index([workspaceId])
+  @@map("collect_forms")
+}
+
+model FormResponse {
+  id           String   @id @default(cuid())
+  formId       String
+  workspaceId  String
+  userId       String?
+  platform     String?
+  sessionId    String?
+  answers      Json                             // key-value map of field answers
+  isComplete   Boolean  @default(false)
+  submittedAt  DateTime @default(now())
+
+  form         CollectForm @relation(fields: [formId], references: [id], onDelete: Cascade)
+
+  @@index([formId, submittedAt(sort: Desc)])
+  @@map("form_responses")
+}
+
+// ─────────────────────────────────────────────────────────────
+// MEDIA PROCESSING  (語音/圖片處理)
+// ─────────────────────────────────────────────────────────────
+
+enum MediaType {
+  AUDIO
+  IMAGE
+  VIDEO
+  DOCUMENT
+}
+
+enum MediaStatus {
+  PENDING
+  PROCESSING
+  DONE
+  FAILED
+}
+
+model MediaJob {
+  id            String      @id @default(cuid())
+  workspaceId   String
+  sessionId     String?
+  type          MediaType
+  status        MediaStatus @default(PENDING)
+  sourceUrl     String
+  transcript    String?     @db.Text           // for audio → text
+  language      String?                        // detected language
+  translatedText String?    @db.Text
+  targetLang    String?
+  durationMs    Int?
+  errorMsg      String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  workspace     Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status])
+  @@map("media_jobs")
+}
+
+// ─────────────────────────────────────────────────────────────
+// AGENT CHAIN  (鏈式 Agent)
+// ─────────────────────────────────────────────────────────────
+
+enum ChainStepType {
+  AGENT_INVOKE     // invoke another agent
+  TRANSFORM        // transform the output (extract/format)
+  CONDITION        // branch on output content
+  PARALLEL         // fan out to multiple agents simultaneously
+  MERGE            // merge parallel results
+}
+
+model AgentChain {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  name         String
+  description  String?
+  stepsJson    Json                              // array of ChainStep
+  enabled      Boolean  @default(true)
+  runCount     Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  runs         ChainRun[]
+
+  @@index([workspaceId])
+  @@map("agent_chains")
+}
+
+model ChainRun {
+  id           String   @id @default(cuid())
+  chainId      String
+  workspaceId  String
+  userId       String
+  platform     String
+  input        String   @db.Text
+  output       String?  @db.Text
+  stepOutputs  Json     @default("{}")           // step id → output
+  status       String   @default("running")      // running | done | failed
+  errorMsg     String?
+  startedAt    DateTime @default(now())
+  completedAt  DateTime?
+
+  chain        AgentChain @relation(fields: [chainId], references: [id], onDelete: Cascade)
+
+  @@index([chainId, startedAt(sort: Desc)])
+  @@map("chain_runs")
+}

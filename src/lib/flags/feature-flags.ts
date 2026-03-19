@@ -146,7 +146,7 @@ export async function setFlagOverride(
     VALUES (${flagKey}, ${workspaceId}, ${enabled}, NOW())
     ON CONFLICT (flag_key, workspace_id)
     DO UPDATE SET enabled = ${enabled}, updated_at = NOW()
-  `;
+  `.catch(() => {});
   // Invalidate cache
   await cacheDel(CacheKey.featureFlag(flagKey, workspaceId));
 }

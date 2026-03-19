@@ -6,8 +6,7 @@ import { getModelConfig }  from "@/services/model.service";
 import { buildRagContext }  from "@/services/rag/rag.service";
 import { withCache, CacheKey, invalidateAgent, TTL } from "@/lib/cache/cache";
 import { withCircuitBreaker, CIRCUITS } from "@/lib/circuit-breaker";
-import { autoTranslateIfNeeded } from "@/services/media/translate.service"; from "@/services/rag/rag.service";
-
+import { autoTranslateIfNeeded } from "@/services/media/translate.service";
 export interface AgentInvokeInput {
   workspaceId: string;
   agentId:     string;

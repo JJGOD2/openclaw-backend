@@ -5,8 +5,9 @@ import { getOrCreateSession, appendMessages, maybeCompressSession } from "@/serv
 import { getModelConfig }  from "@/services/model.service";
 import { buildRagContext }  from "@/services/rag/rag.service";
 import { withCache, CacheKey, invalidateAgent, TTL } from "@/lib/cache/cache";
-import { withCircuitBreaker, CIRCUITS } from "@/lib/circuit-breaker";
+
 import { autoTranslateIfNeeded } from "@/services/media/translate.service";
+
 export interface AgentInvokeInput {
   workspaceId: string;
   agentId:     string;
@@ -98,7 +99,7 @@ export async function invokeAgent(input: AgentInvokeInput): Promise<AgentInvokeR
   let outputTokens = 0;
 
   try {
-    const response = await withCircuitBreaker(CIRCUITS.CLAUDE_API, () => fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -113,6 +114,7 @@ export async function invokeAgent(input: AgentInvokeInput): Promise<AgentInvokeR
         temperature: modelCfg.temperature,
         ...(modelCfg.topP !== null ? { top_p: modelCfg.topP } : {}),
       }),
+      signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) throw new Error(await response.text());
     const data    = await response.json();

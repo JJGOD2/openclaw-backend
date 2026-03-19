@@ -163,6 +163,7 @@ model Workspace {
   abTests       ABTest[]
   chains        AgentChain[]
   orchFlows     OrchestrationFlow[]
+  customTools   CustomTool[]
   oauthTokens  OAuthToken[]
   billingCustomer BillingCustomer?
 

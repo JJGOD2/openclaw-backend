@@ -1,6 +1,9 @@
 FROM node:20-alpine
 WORKDIR /app
 
+# Install OpenSSL - required by Prisma
+RUN apk add --no-cache openssl
+
 # Install all deps (need devDeps for tsx)
 COPY package*.json ./
 RUN npm install

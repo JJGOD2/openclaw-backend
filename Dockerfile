@@ -1,15 +1,14 @@
-FROM node:20-alpine
+FROM node:20-slim
 WORKDIR /app
 
-# Install OpenSSL - required by Prisma
-RUN apk add --no-cache openssl
+# Install OpenSSL - required by Prisma on Debian-based images
+RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 
-# Install all deps (need devDeps for tsx)
+# Install dependencies including tsx
 COPY package*.json ./
-RUN npm install
-RUN npm install -g tsx
+RUN npm install && npm install -g tsx
 
-# Copy source
+# Copy source files
 COPY tsconfig.json ./
 COPY prisma ./prisma
 COPY src ./src
@@ -20,5 +19,4 @@ RUN npx prisma generate
 
 EXPOSE 4000
 
-# Run TypeScript directly with tsx - no compilation needed
-CMD ["npx", "tsx", "src/index.ts"]
+CMD ["tsx", "src/index.ts"]

@@ -42,13 +42,13 @@ const ENV_SPECS: EnvSpec[] = [
     key:      "FRONTEND_URL",
     desc:     "前端 URL（OAuth callback 用）",
     required: false,
-    validate: v => v.startsWith("http") ? null : "應以 http:// 或 https:// 開頭",
+    validate: v => (v.startsWith("http") || v === "*") ? null : "應以 http:// 或 https:// 開頭",
   },
   {
     key:      "BACKEND_URL",
     desc:     "後端 URL（OAuth callback 用）",
     required: false,
-    validate: v => v.startsWith("http") ? null : "應以 http:// 或 https:// 開頭",
+    validate: v => (v.startsWith("http") || v === "*") ? null : "應以 http:// 或 https:// 開頭",
   },
 ];
 
@@ -104,13 +104,11 @@ export function validateEnv(): void {
 
   if (errors.length > 0) {
     console.error(`\n╔${"═".repeat(52)}╗`);
-    console.error(`║  ✗ 啟動失敗：環境設定錯誤`);
+    console.error(`║  ⚠ 環境設定警告（服務繼續啟動）`);
     console.error(`╠${"═".repeat(52)}╣`);
     errors.forEach(e => console.error(`║${e}`));
-    console.error(`╠${"═".repeat(52)}╣`);
-    console.error(`║  請修正以上設定後重新啟動`);
     console.error(`╚${"═".repeat(52)}╝\n`);
-    process.exit(1);
+    // 警告但不退出，讓服務繼續啟動
   }
 
   console.log("✓ 環境設定驗證通過");

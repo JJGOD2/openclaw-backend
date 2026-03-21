@@ -95,36 +95,41 @@ export async function invokeAgent(input: AgentInvokeInput): Promise<AgentInvokeR
     { role: "user" as const, content: effectiveText },
   ];
 
-  // ── Call Claude API ───────────────────────────────────────
-  const apiKey = process.env.ANTHROPIC_API_KEY ?? "";
+  // ── Call AI API (OpenRouter) ──────────────────────────────
+  const apiKey  = process.env.OPENROUTER_API_KEY ?? "";
+  const model   = process.env.OPENROUTER_MODEL   ?? "anthropic/claude-3-5-sonnet";
   let reply        = "抱歉，目前無法回覆，請稍後再試。";
   let promptTokens = 0;
   let outputTokens = 0;
 
+  const messagesWithSystem = [
+    { role: "system" as const, content: systemPrompt },
+    ...allMessages,
+  ];
+
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method:  "POST",
       headers: {
-        "Content-Type":      "application/json",
-        "x-api-key":         apiKey,
-        "anthropic-version": "2023-06-01",
+        "Content-Type":  "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+        "HTTP-Referer":  process.env.BACKEND_URL ?? "https://mywrapper.ai",
+        "X-Title":       "MyWrapper Technologies",
       },
       body: JSON.stringify({
-        model:       modelCfg.modelId,
-        max_tokens:  modelCfg.maxTokens,
-        system:      systemPrompt,
-        messages:    allMessages,
-        temperature: modelCfg.temperature,
-        ...(modelCfg.topP !== null ? { top_p: modelCfg.topP } : {}),
+        model,
+        max_tokens:  modelCfg.maxTokens ?? 1000,
+        messages:    messagesWithSystem,
+        temperature: modelCfg.temperature ?? 0.7,
       }),
       signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) throw new Error(await response.text());
     const data   = await response.json();
-    reply        = data.content?.[0]?.text ?? "（無回應）";
-    promptTokens = data.usage?.input_tokens  ?? 0;
-    outputTokens = data.usage?.output_tokens ?? 0;
+    reply        = data.choices?.[0]?.message?.content ?? "（無回應）";
+    promptTokens = data.usage?.prompt_tokens     ?? 0;
+    outputTokens = data.usage?.completion_tokens ?? 0;
   } catch (err) {
     await prisma.logEntry.create({
       data: {

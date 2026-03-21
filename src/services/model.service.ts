@@ -19,7 +19,7 @@ export interface ModelInfo {
 
 export const MODEL_CATALOG: ModelInfo[] = [
   {
-    id:              "claude-haiku-4-5-20251001",
+    id:              "anthropic/claude-3-haiku",
     provider:        "ANTHROPIC",
     name:            "Claude Haiku 4.5",
     contextWindow:   200_000,
@@ -30,7 +30,7 @@ export const MODEL_CATALOG: ModelInfo[] = [
     description:     "最快、最省成本，適合簡單客服問答與大量請求",
   },
   {
-    id:              "claude-sonnet-4-20250514",
+    id:              "anthropic/claude-3-5-sonnet",
     provider:        "ANTHROPIC",
     name:            "Claude Sonnet 4",
     contextWindow:   200_000,
@@ -41,7 +41,7 @@ export const MODEL_CATALOG: ModelInfo[] = [
     description:     "智慧與速度的最佳平衡，推薦用於大多數 Agent 場景",
   },
   {
-    id:              "claude-opus-4-6",
+    id:              "anthropic/claude-3-opus",
     provider:        "ANTHROPIC",
     name:            "Claude Opus 4.6",
     contextWindow:   200_000,
@@ -98,7 +98,7 @@ export async function getModelConfig(
   };
 
   // Platform default
-  return { modelId: "claude-sonnet-4-20250514", maxTokens: 1024, temperature: 0.7, topP: null };
+  return { modelId: process.env.OPENROUTER_MODEL ?? "anthropic/claude-3-5-sonnet", maxTokens: 1024, temperature: 0.7, topP: null };
 }
 
 // ── Upsert model config ───────────────────────────────────────

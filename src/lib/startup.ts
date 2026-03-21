@@ -33,10 +33,10 @@ const ENV_SPECS: EnvSpec[] = [
   },
   // ── Warning only (soft warn) ────────────────────────────
   {
-    key:      "ANTHROPIC_API_KEY",
-    desc:     "Anthropic API Key",
+    key:      "OPENROUTER_API_KEY",
+    desc:     "OpenRouter API Key",
     required: false,
-    validate: v => v.startsWith("sk-ant-") ? null : "格式不符（應以 sk-ant- 開頭）",
+    validate: v => v.startsWith("sk-or-") ? null : "格式可能不符（應以 sk-or- 開頭）",
   },
   {
     key:      "FRONTEND_URL",
